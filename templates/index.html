@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flood Water Segmentation</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --text:#1c2733; --muted:#5d6b7a; --accent:#1769aa; --border:#d8dee6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10161d; --card:#18212b; --text:#e7edf3; --muted:#93a1b0; --accent:#4aa3e8; --border:#2b3947; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:1rem; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=file] { margin-right:12px; color:var(--text); }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-top:16px; }
+  figure { margin:0; text-align:center; }
+  img, canvas { width:100%; image-rendering:pixelated; border-radius:8px; border:1px solid var(--border); background:#000; }
+  figcaption { color:var(--muted); font-size:.9rem; margin-top:6px; }
+  #stats { margin-top:12px; font-weight:600; }
+  #error { color:#c0392b; margin-top:12px; }
+  small { color: var(--muted); display:block; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Flood Water Segmentation</h1>
+  <p class="sub">Upload a 12-band satellite image (GeoTIFF or .npy) and get a binary water mask.
+     Model: {{ info.arch }} / {{ info.encoder }}, threshold {{ "%.2f"|format(info.threshold) }}.</p>
+  <div class="card">
+    <input id="file" type="file" accept=".tif,.tiff,.npy">
+    <button id="run" disabled>Predict</button>
+    <div id="error"></div>
+    <div id="result" hidden>
+      <div id="stats"></div>
+      <div class="grid">
+        <figure><img id="rgb" alt="RGB preview"><figcaption>RGB preview</figcaption></figure>
+        <figure><img id="mask" alt="Predicted mask"><figcaption>Predicted mask (white = water)</figcaption></figure>
+        <figure><canvas id="overlay"></canvas><figcaption>Overlay</figcaption></figure>
+      </div>
+      <p><a id="dl" download="mask.png">Download mask PNG</a></p>
+    </div>
+    <small>Input must have exactly 12 bands in training order: Coastal, Blue, Green, Red, NIR, SWIR1, SWIR2, QA, Merit DEM, Copernicus DEM, ESA WorldCover, Water occurrence.</small>
+  </div>
+</main>
+<script>
+const fileEl = document.getElementById('file'), runEl = document.getElementById('run');
+const errEl = document.getElementById('error'), resEl = document.getElementById('result');
+fileEl.onchange = () => { runEl.disabled = !fileEl.files.length; };
+const loadImg = src => new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = src; });
+
+runEl.onclick = async () => {
+  errEl.textContent = ''; resEl.hidden = true; runEl.disabled = true; runEl.textContent = 'Running...';
+  const fd = new FormData(); fd.append('file', fileEl.files[0]);
+  try {
+    const r = await fetch('/predict?format=json', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Request failed');
+    const rgbSrc = 'data:image/png;base64,' + d.rgb_png_base64, maskSrc = 'data:image/png;base64,' + d.mask_png_base64;
+    document.getElementById('rgb').src = rgbSrc;
+    document.getElementById('mask').src = maskSrc;
+    document.getElementById('dl').href = maskSrc;
+    document.getElementById('stats').textContent =
+      `Water coverage: ${(d.water_ratio * 100).toFixed(1)}%  |  ${d.width}x${d.height} px`;
+    const [a, m] = await Promise.all([loadImg(rgbSrc), loadImg(maskSrc)]);
+    const c = document.getElementById('overlay'); c.width = d.width; c.height = d.height;
+    const ctx = c.getContext('2d'); ctx.drawImage(a, 0, 0);
+    const t = document.createElement('canvas'); t.width = d.width; t.height = d.height;
+    const tc = t.getContext('2d'); tc.drawImage(m, 0, 0);
+    const mk = tc.getImageData(0, 0, d.width, d.height), o = ctx.getImageData(0, 0, d.width, d.height);
+    for (let i = 0; i < mk.data.length; i += 4) if (mk.data[i] > 127) {
+      o.data[i] *= 0.4; o.data[i+1] = 0.4 * o.data[i+1] + 72; o.data[i+2] = 0.4 * o.data[i+2] + 153;
+    }
+    ctx.putImageData(o, 0, 0);
+    resEl.hidden = false;
+  } catch (e) { errEl.textContent = e.message; }
+  runEl.textContent = 'Predict'; runEl.disabled = false;
+};
+</script>
+</body>
+</html>
